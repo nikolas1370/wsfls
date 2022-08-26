@@ -1,45 +1,9 @@
-const socket = require("wscs") // зхаміни на завісімость
+const socket = require("wscs") 
 const fs = require("fs")
-const uuid = require("uuid")
+const uuid = require("uuid");
+
 const packetSize = 128 * 1024
 let FileLoader;
-let timeStart = new Date().getTime() // шоб при пере перезагрузкі сервера небуло проблем з загрузкою
-
-/**
- * 
- * @param {Array} loaderArray 
- * @param {Number} id 
- * @param {String} key 
- */
-function loaderFind (loaderArray, id, key) 
-{
-    for (let i = 0; i < loaderArray.length; i++) 
-    {
-        if(loaderArray[i].id === id)
-        {
-            if(loaderArray[i].key === key)
-                return loaderArray[i]
-            else 
-                return;
-        }                        
-    }    
-}
-
-class LoaderU
-{
-    constructor(id , key, temporaryName)
-    { 
-        return {id: id, key: key, temporaryName : temporaryName}
-    } 
-}
-class LoaderD
-{
-    constructor(id , key, filePath, size, fileID)
-    { 
-        return {id: id, key: key, filePath: filePath, size : size, fileID : fileID} 
-    } 
-}
-
 function deleteFromFolderAllFile(_path)
 {
     fs.readdir(_path, (err, files) => // не я 
@@ -71,6 +35,7 @@ class FileLoaderServer// буде стаорено тіки раз
 
         FileLoader = this; 
         filesFolderPath = "./" + _filesFolderPath + "/";
+        FFile.baseFolder = filesFolderPath
         temporaryFilesPath  = filesFolderPath + "temporaryFiles/"
         
         try { fs.mkdirSync(temporaryFilesPath) } catch (error) {}
@@ -83,9 +48,296 @@ class FileLoaderServer// буде стаорено тіки раз
         {
             this.upload.newSocket(sc);
             this.download.newSocket(sc);
+        });        
+    }
+}
+
+class FFile
+{
+    #id
+    #fd // fileDescriptor
+    #size
+    #opens
+    #waitingReadList
+    #amountData
+    constructor(header)
+    {
+        this.header = header;
+        this.#id =  new Date().getTime() + "_" + uuid.v4();
+        this.#opens = false;
+        this.#waitingReadList = []
+        this.#amountData = 0;
+        this.lox = ""
+        this.loxN = 0
+        this.loxN2 = 0
+    }
+
+    static baseFolder = ""
+
+    get id() 
+    {
+        return this.#id;
+    }
+    get amountData()
+    {
+        return this.#amountData;
+    }
+
+    get size()
+    {
+        return this.#size;
+    }
+
+    open(filePath, callbackOpen, callbackErrar)
+    {
+        this.#opens = true;
+        filePath = FFile.baseFolder + filePath
+        fs.stat(filePath,  (err, stat) =>
+        {          
+            if(err)
+            {
+                this.#opens = false;
+                return callbackErrar(err)
+            }
+
+            this.#size = stat.size;                 
+            fs.open(filePath, 'r', (_err, fd) => 
+            {
+                if(_err)
+                {
+                    this.#opens = false;
+                    return callbackErrar(_err)
+                }
+
+                this.#fd = fd;      
+                this.#opens = false;
+                callbackOpen();
+                
+                for (let i = 0; i < this.#waitingReadList.length; i++) 
+                    this.read(this.#waitingReadList[i].start, this.#waitingReadList[i].length, this.#waitingReadList[i].callback)
+
+                this.#waitingReadList.length = 0;
+            })
+        })       
+    }
+
+    /**
+     * 
+     * @param {*} start 
+     * @param {*} length 
+     * @param {*} callback  callback(undefined)  помилка
+     * @returns 
+     */
+    read(start, length, callback)
+    {
+        if(!this.#fd)
+        {
+            if(this.#opens)
+                return this.#waitingReadList.push({start, length, callback})
+            else
+                return callback();
+        }
+
+        let buffer = Buffer.alloc(length);
+        fs.read(this.#fd, buffer, 0, length, start, (err, bytesRead, buf) =>
+        {                            
+            if(err)
+                callback(undefined);
+            else
+                callback(bytesRead !== length ? buf.slice(0, bytesRead) : buf)                
         });
-   
-        
+    }
+
+    findFile(fileName, callback)
+    {
+        this.#id = fileName;
+        fs.stat(temporaryFilesPath + this.#id,  (err, stat) => 
+        {
+            this.#amountData = (err ? 0 : stat.size);
+            callback(this.#amountData)
+        })
+    }
+
+    appendFile(data, callback = () => {})
+    {       
+        fs.appendFile(temporaryFilesPath + this.#id, data, "utf8", (err) => 
+        {   
+            if(err)    
+                return callback();
+
+            fs.stat(temporaryFilesPath + this.#id,  (err, stat) => 
+            {                
+                this.#amountData = (err ? undefined : stat.size);
+                callback(this.#amountData)
+            });
+        });                              
+    }
+
+    checkFile(callback)
+    {
+        fs.stat(temporaryFilesPath + this.#id,  (err, stat) => callback(!!stat))
+    }
+    saveFile(path, callback)
+    {
+        fs.rename(temporaryFilesPath + this.#id, filesFolderPath + path, err => {return callback(!err)});
+    }
+
+    deleteTemporary()
+    {
+        fs.unlink(temporaryFilesPath + this.#id, err => {console.log("deleteTemporary fail", err)});
+    }
+
+    close()
+    {
+        if(this.fs)
+        {
+            fs.close(this.#fd, () => {})
+            this.#fd = undefined
+        }
+    }
+}
+
+class Upload// ненравиться це перепиши колись )// цей комент ту прописаний
+{
+    constructor()
+    {
+        this.StartUpload = (data, fun) => {fun(false)}
+        this.EndUpload = (data, fun) => {fun(false)}
+        this.AbortUpload = (header) => {}
+        this.globalFileList = []
+    }
+
+    newSocket(sc)
+    {
+        let currentFile;
+        let fileList = []; // FFile
+
+        sc.on("StartUpload", (data = {}) =>  
+        {            
+            if(data.id)
+            {
+                currentFile = this.globalFileList[data.id]
+                if(!currentFile)
+                    return sc.send("StartUploadResponse", {status: false});
+
+                return sc.send("StartUploadResponse", {status: true, id: currentFile.id,  amountData: currentFile.amountData});
+            }
+
+            currentFile = undefined;            
+            let functionUsed = false; 
+            this.StartUpload(data.header, (allowUpload = false, response = {}) =>
+            {                
+                if(functionUsed)
+                    return;
+                else
+                    functionUsed = true;
+
+                if(allowUpload)
+                {                                  
+                    let file = new FFile(data.header)
+                    this.globalFileList[file.id] = file;
+                    fileList.push(file.id)
+                    currentFile = file
+                    if(data.id)
+                        file.findFile(data.id , (amountData) => sc.send("StartUploadResponse", {status: true, id: file.id, amountData, response: response}));
+                    else
+                        sc.send("StartUploadResponse", {status: true, id: file.id,  amountData: 0, response: response});                                          
+                }                        
+                else
+                    sc.send("StartUploadResponse", {status: false});                                                   
+            });              
+        });
+
+        sc.on("Upload", (data, hea) =>
+        {            
+            if(!currentFile || !Buffer.isBuffer(data))
+                return sc.send("UploadResponse", {status: false});
+         
+            if(currentFile.amountData  !== hea.amountData)
+                return  sc.send("UploadResponse", {status: true, id: currentFile.id, amountData : currentFile.amountData});
+
+            let currentFile_ = currentFile
+            currentFile.appendFile(data, (amountData) => 
+            {                
+                if(typeof(amountData) === "number")
+                    sc.send("UploadResponse", {status: true, id: currentFile_.id, amountData});
+                else
+                    sc.send("UploadResponse", {status: false});
+            })           
+        });
+
+        sc.on("EndUpload", (id) => 
+        {
+            if(currentFile.id !== id)   
+                return sc.send("EndUploadResponse", {status: false, id: currentFile_.id});
+ 
+            let currentFile_ = currentFile;
+            currentFile = undefined;
+            currentFile_.checkFile((status) =>
+            {
+                if(status)
+                {
+                    let functionUsed = false;
+                    this.EndUpload(currentFile_.header, (allowWrite = false, filePath, response) => 
+                    { 
+                        if(functionUsed)
+                            return;
+                        else
+                            functionUsed = true
+                        
+                        for (let i = 0; i < fileList.length; i++) 
+                        {
+                            if(fileList[i] === currentFile_.id)
+                            {
+                                fileList[i].splice(i, 1);
+                                this.globalFileList[currentFile_.id] = undefined
+                                break
+                            }
+                            
+                        }
+
+                        if(allowWrite)
+                        {
+                            currentFile_.saveFile(filePath, status => 
+                            {
+                                if(status) 
+                                    sc.send("EndUploadResponse", {status: true,  response, id: currentFile_.id});
+                                else
+                                    sc.send("EndUploadResponse", {status: false, id: currentFile_.id});
+                            })
+                        }
+                        else
+                        {
+                            currentFile_.deleteTemporary();                          
+                            sc.send("EndUploadResponse", {status: false, notallowed: true, response, id: currentFile_.id});
+                        }
+                    });      
+                }
+                else
+                    return sc.send("EndUploadResponse", {status: false, id: currentFile_.id});
+            })                
+        });
+
+        sc.on("AbortUpload", (id) => 
+        {// видалить в лобалкі
+            for (let i = 0; i < fileList.length; i++) 
+            {
+                if(fileList[i].id === id)
+                {
+                    var file = fileList.splice(i, 1)[0]
+                    this.globalFileList[file.id] = undefined;
+                    break;
+                }                
+            }
+
+            if(!file)
+                return;
+
+            file.deleteTemporary();    
+            this.AbortUpload(file.header);            
+            if(currentFile.id === id)
+                currentFile = undefined;            
+        });
     }
 }
 
@@ -93,332 +345,108 @@ class Download
 {
     constructor()
     {
-        this.id = 0
-        // StartDownload EndDownload AbortDownload оприділя користувач 
-        /** перед  загрузкой
-         * @param {all} data // ниже  filePath відносний
-         * @param {function} fun fun(allowDownload : boolean, filePath : String response : all)   функцію визвать обовязково ане то робота не продовжиться
-         */
-        this.StartDownload = (data, fun) => {fun(false) }
-
-        
+        this.StartDownload = (data, fun) => {fun(false) }        
         this.EndDownload = () => {}
         this.AbortDownload = () => {}
-
-        this.loaderArray = []// LoaderD
     }
 
     newSocket(sc)
     {
-        let loader; // LoaderD
-        let reconnected = false;  
-        let createLoader = () => { return new LoaderD(this.id++, uuid.v4()) }
+        let currentFile;
+        let fileList = []; // FFile
 
-        let closeFile = () => 
+        sc.setEventClose(() => 
         {
-            if(loader && loader.fileID)
-            {
-                fs.close(loader.fileID, () => {})
-                loader.fileID = undefined
-            }
-        }
+            currentFile = undefined;
+            for (let i = 0; i < fileList.length; i++) 
+                fileList[i].close();
 
-        /**
-         * @param {*} callbackOpen(size)
-         * @param {*} callbackErrar 
-         */
-        let openFile = (callbackOpen, callbackErrar) => 
+            fileList.length = 0;
+        });
+        sc.on("StartDownload", (data) => 
         {
-            fs.stat( loader.filePath,  (err, stat) =>
+            currentFile = undefined;
+            if(data.id)
             {                
-                if(err)
+                for (let i = 0; i < fileList.length; i++) 
                 {
-                    loader.filePath = undefined;       
-                    return callbackErrar(err)
+                    if(fileList[i].id === data.id)// підчас цього зєднання цей файл починав завантаження но був призупинений чи приорітет понижений
+                    {                        
+                        currentFile = fileList[i];
+                        return  sc.send("StartDownloadResponse", {status: true, totalSize: currentFile.size, id: currentFile.id})
+                    }                
                 }
-
-                loader.size = stat.size;                
-                fs.open(loader.filePath, 'r', (_err, fd) => 
-                {
-                    if(err)
-                    {
-                        loader.size = undefined;
-                        loader.filePath = undefined;       
-                        return callbackErrar(err)
-                    }
-    
-                    loader.fileID = fd;      
-                    callbackOpen(fd, stat.size);
-                })
-            })            
-        }
-
-        sc.setEventClose(() => closeFile());
-        sc.on("StartDownload", (data) => //data {id, key, request} 
-        {
-            if(!loader)
-                loader = loaderFind(this.loaderArray, data.id, data.key)
-
-            if(loader && loader.filePath)
-                reconnected = true;     
-            else// значить в первий раз
-            {
-                reconnected = false;
-                loader = createLoader()
-                this.loaderArray.push(loader);
             }
-
-            if(reconnected)
-                return  openFile( (fd, size) => sc.send("StartDownloadResponse", {status: true, size: size, id: loader.id, key: loader.key, codeLoad : timeStart}),  (er) => sc.send("StartDownloadResponse", {status: false, notallowed: false}))
-
+            
             let functionUsed = false;                
-            this.StartDownload(data.request, (allowDownload = false,  filePath, response) =>
+            this.StartDownload(data.header, (allowDownload = false,  filePath, response) =>
             {
                 if(functionUsed)
                     return;
                 else
                     functionUsed = true;
-
+                    
                 if(allowDownload)
-                {                    
-                    loader.filePath = filesFolderPath + filePath;
-                    return openFile( (fd, size) => sc.send("StartDownloadResponse", {status: true, size: size, id: loader.id, key: loader.key, response: response, codeLoad : timeStart}), () => {sc.send("StartDownloadResponse", {status: false, notallowed: false})})
+                {                 
+                    currentFile = new FFile(data.header);
+                    fileList.push(currentFile);
+                    return currentFile.open(filePath, () => sc.send("StartDownloadResponse", {status: true, totalSize: currentFile.size, response: response, id: currentFile.id}), () => {sc.send("StartDownloadResponse", {status: false, notallowed: false, openError : true})})
                 }
-
-                loader.filePath = undefined;         
+  
                 sc.send("StartDownloadResponse", {status: false, response: response, notallowed: true})
             });  
         })
         
-        sc.on("Download", (data) => // data {size, codeLoad} // size скіки в клієнта є байтів
+        sc.on("Download", (data) =>
         {
-            let size = data.size;
-
-            if(data.codeLoad !== timeStart) 
-                return console.log("codeLoad  !==", data)
-            
-            if(!loader || !loader.filePath)
+            if(!currentFile || currentFile.id !== data.id)
                 return sc.send("DownloadResponse", {status : false})
-
-            if(size >= loader.size)
+  
+            let currentFile_ = currentFile;
+            currentFile_.read(data.amountData, packetSize, (buf) =>
             {
-                loader.filePath = undefined;  
-                return sc.send("EndDownload", this.EndDownload());
-            }
-
-            let mj = (packetSize + size > loader.size ? loader.size - size : packetSize) 
-            let buffer = Buffer.alloc(mj)
-
-            let read = () => 
-            {
-                fs.read(loader.fileID, buffer, 0, mj, size, (err, byteLength, buf) =>
+                if(!currentFile || currentFile.id !== currentFile_.id)
+                    return  sc.send("DownloadResponse", undefined);
+                                    
+                if(!buf)
                 {
-                    if(err)
-                        return sc.send("DownloadResponse", {status : false})
-    
-                    sc.send("DownloadResponse", buf)
-                });
-            }
-            if(loader.fileID)// бо кудась може потіряться
-                read();
-            else
-            {
-                openFile((fb, xize) =>
+                    sc.send("DownloadResponse", undefined);
+                    currentFile_.close();
+                    let index = fileList.indexOf(currentFile_);
+                    fileList.splice(index, index === -1? 0 : 1);
+                    currentFile = undefined;                    
+                }
+                else 
                 {
-                    loader.fileID = fb;
-                    read();
-                }, () => sc.send("DownloadResponse", {status : false}))
-            }          
-        } );
+                    let end = buf.length < packetSize
+                    sc.send("DownloadResponse", buf, {end: end, response: end ? this.EndDownload(currentFile_.header) : undefined, id: currentFile_.id})
+                    if(end)
+                    {
+                        currentFile_.close()
+                        let index = fileList.indexOf(currentFile_);
+                        fileList.splice(index, index === -1? 0 : 1);
+                        currentFile = undefined
+                    }
+                }
+            })
+        } );        
 
-        sc.on("AbortDownload", () =>
+        sc.on("AbortDownload", (id) =>
         {
-            loader.filePath = undefined;  
-            sc.send("AbortDownloadResponse", {status: true })
-            this.AbortDownload();
+            for (let i = 0; i < fileList.length; i++) 
+            {
+                if(fileList[i].id === id)
+                {
+                    if(currentFile && currentFile.id === id)
+                        currentFile = undefined;
+
+                    this.AbortDownload(fileList[i].header); 
+                    fileList[i].close();
+                    return fileList.splice(i, 1);
+                }                
+            }            
         });        
     }
 }
 
-class Upload
-{
-    constructor(sc)
-    {
-        this.id = 0    
-        this.StartUpload = (data, fun) => {fun(false)}
-        this.EndUpload = (data, fun) => {fun(false)}
-        this.AbortUpload = () => {}
-        this.loaderArray = []// LoaderU   
-    }
-
-    newSocket(sc)
-    {
-        let createLoader = () =>
-        {
-            let key = uuid.v4()
-            return new LoaderU(this.id++, key) 
-        }
-        let loader; 
-        let reconnectedUp = false;  
-        
-        sc.on("StartUpload", (data = {}) =>  // data {id, key, request} 
-        {// визивається і при востановленні завантаження 
-            let  verifyRequest = () =>
-            {                
-                let functionUsed = false;// захист від повторного використання функції
-                this.StartUpload(data.request, (allowUpload = false, response = {}) =>
-                {
-                    if(functionUsed)
-                        return;
-                    else
-                        functionUsed = true;
-
-                    if(allowUpload)
-                    {                        
-                        loader.temporaryName = new Date().getTime() + "_"+ uuid.v4();
-                        loader.data = data.request;
-                    }                        
-                    else
-                        loader.temporaryName = undefined;
-                    
-                    sc.send("StartUploadResponse", {status: allowUpload, id: loader.id, key: loader.key, size: 0, response: response});                     
-                });  
-            }
-
-            if(!loader)
-            {
-                loader = loaderFind(this.loaderArray, data.id, data.key)
-                if(loader && loader.temporaryName)
-                    reconnectedUp = true;     
-                else// значить в первий раз
-                {
-                    reconnectedUp = false;
-                    loader = createLoader();
-                    this.loaderArray.push(loader);
-                }
-            }                
-
-            if(!loader.temporaryName) 
-                verifyRequest();
-            else if(reconnectedUp)
-            {              
-                fs.stat(temporaryFilesPath + loader.temporaryName,(err, stats) =>
-                {
-                    if(err)
-                        verifyRequest();
-                    else
-                        sc.send("StartUploadResponse", {status: true, id: loader.id, key: loader.key,  size: stats.size})
-                });
-            }
-        });
-
-        sc.on("Upload", (data) =>
-        {
-            if(!loader || !loader.temporaryName || !Buffer.isBuffer(data))
-            {
-                loader.temporaryName = undefined;
-                return sc.send("UploadResponse", {status: false});
-            }
-
-           fs.appendFile(temporaryFilesPath + loader.temporaryName, data, "utf8", (err) => 
-           {
-                if(err)
-                {
-                    loader.temporaryName = undefined;
-                    console.log(err)
-                }
-
-                sc.send("UploadResponse", {status: !err, byteLength: data.byteLength}) 
-           });
-        });
-
-        sc.on("EndUpload", () => 
-        { 
-            if(!loader || !loader.temporaryName)
-                return sc.send("EndUploadResponse", {status: false});
-
-            fs.stat(temporaryFilesPath + loader.temporaryName,(err, stats) =>
-            {
-                if(err)
-                {
-                    loader.temporaryName = undefined;
-                    return sc.send("EndUploadResponse", {status: false});
-                }
-                
-                let functionUsed = false;
-                this.EndUpload(loader.data, (allowWrite = false, filePath, response) => 
-                { 
-                    if(functionUsed)
-                        return;
-                    else
-                        functionUsed = true
-                    
-                    if(allowWrite)
-                    {   
-                       fs.rename(temporaryFilesPath + loader.temporaryName, filesFolderPath + filePath, (err) =>
-                       {
-                            loader.temporaryName = undefined;
-                            sc.send("EndUploadResponse", {status: !err, response: response});
-                       });
-                    }
-                    else
-                    {
-                        fs.unlink(temporaryFilesPath + loader.temporaryName, err => {});
-                        loader.temporaryName = undefined;
-                        sc.send("EndUploadResponse", {status: false, response: response});
-                    }
-                });                
-            });
-        });
-
-        sc.on("AbortUpload", () => 
-        {
-            if(!loader && !loader.temporaryName)
-                return sc.send("AbortUploadResponse", {status: false })
-
-            this.AbortUpload();
-            fs.unlink(temporaryFilesPath + loader.temporaryName, err => { });
-            loader.temporaryName = undefined
-            sc.send("AbortUploadResponse", {status: true })
-        });
-    }
-}
-
 module.exports = FileLoaderServer;
-
-/*
-
-  function Utf8ArrayToStr(array) {
-        var out, i, len, c;
-        var char2, char3;
-
-        out = "";
-        len = array.length;
-        i = 0;
-        while(i < len) {
-            c = array[i++];
-            switch(c >> 4)
-            {
-                case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
-                // 0xxxxxxx
-                out += String.fromCharCode(c);
-                break;
-                case 12: case 13:
-                // 110x xxxx   10xx xxxx
-                char2 = array[i++];
-                out += String.fromCharCode(((c & 0x1F) << 6) | (char2 & 0x3F));
-                break;
-                case 14:
-                    // 1110 xxxx  10xx xxxx  10xx xxxx
-                    char2 = array[i++];
-                    char3 = array[i++];
-                    out += String.fromCharCode(((c & 0x0F) << 12) |
-                        ((char2 & 0x3F) << 6) |
-                        ((char3 & 0x3F) << 0));
-                    break;
-            }
-        }
-
-        return out;
-    }
-*/

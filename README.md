@@ -1,5 +1,5 @@
 npm install wsfls <br>
-для браузера <a href="https://github.com/nikolas1370/wsflc">тут</a>
+для браузера <a href="https://www.npmjs.com/package/wsflc">тут</a>
 ```
 
 const fs = require("fs")
@@ -27,14 +27,14 @@ fl.upload.EndUpload = (data, fun) =>
 { // data таж сама що і в StartUpload
     // папки повинні існувати
     if (data.id === id && data.key === key)
-        fun(true, "Video/" + data.fileName, {message: "я дозволяю зберегти файл"}) // функцію визвать обовязково 
+        fun(true, "Video/" + data.fileName, {message: "я дозволяю зберегти файл", filename: data.ji}) // функцію визвать обовязково 
     else// шлях до файлу буде "./Files/Video/" + e.target.files[0].name
         fun(false, undefined ,{message: "я не дозволяю зберегти файл"}); // функцію визвать обовязково 
 }
 
-fl.upload.AbortUpload = () => 
+fl.upload.AbortUpload = (header) => 
 {
-    console.log("AbortUpload")
+    console.log("AbortUpload", header)
 }
 
 /*-------*/
@@ -44,8 +44,9 @@ fl.download.StartDownload = (data, fun) =>
 { //fun(allowDownload : boolean, filePath : String, response : all)   функцію визвать обовязково ане то робота не продовжиться
     if (data.id === id && data.key === key) 
     {
+        
         let type = data.fileName.split(".")[1];
-        if (type === "jpg")
+        if (type === "jpg" || type === "png")
             type = "img/";
         else if (type === "mp4")
             type = "video/";
@@ -58,9 +59,10 @@ fl.download.StartDownload = (data, fun) =>
         fun(false, undefined, "id або key невірний");// функцію визвать обовязково 
 }
 
-fl.download.EndDownload = () => 
-{    
-    return "це отримає браузер" // "це отримає браузер" || 42 || {} || boolean || undefined || null 
+fl.download.EndDownload = (data) => 
+{//data те саме що і в fl.download.StartDownload
+  //  console.log(data)// header
+   return "це отримає браузер" // "це отримає браузер" || 42 || {} || boolean || undefined || null 
 }
 
 fl.download.AbortDownload = () => 
